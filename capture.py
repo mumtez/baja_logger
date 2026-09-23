@@ -27,10 +27,14 @@ The two boards have independent clocks, so their timestamps are NOT aligned
 with each other. The analysis lines them up on the taps instead, which is why
 a few milliseconds of start skew here does not matter.
 
-Reading a run back:
+Put each physical setup's runs in their own folder with --out-dir:
 
-    from capture import load_run
-    df, meta = load_run("run_oz050_trial1_A_20260920_161500.csv")
+    python capture.py ... --oz 50 --out-dir data/2026-09-20_bucket-on-erasers
+
+Reading a run back (needs numpy and pandas, see requirements.txt):
+
+    from tapkit import load_run
+    df, meta = load_run("data/2026-09-20_bucket-on-erasers/run_oz050_trial1_A_20260920_233736.csv")
 """
 
 import argparse
@@ -38,6 +42,7 @@ import datetime as dt
 import re
 import sys
 import time
+from pathlib import Path
 
 try:
     import serial
@@ -325,61 +330,6 @@ def capture(specs, seconds, notes, baud=921600):
     return sum(s.n_data for s in streams)
 
 
-# -------------------------------------------------------------- reading back
-
-def load_run(path):
-    """Return (DataFrame in g, metadata dict). Requires pandas.
-
-    Tolerates ESP32 ROM boot messages and UART garbage appearing anywhere,
-    including above the sketch's own banner.
-    """
-    import pandas as pd
-    import numpy as np
-
-    meta, columns, rows, noise = {}, None, [], 0
-    with open(path, "rb") as fh:
-        for raw in fh:
-            line = raw.decode("utf-8", "replace").strip(" \t\r\n\x00\ufffd")
-            if not line:
-                continue
-            if line.startswith("#"):
-                body = line[1:].strip()
-                if body.startswith("columns:"):
-                    columns = [c.strip() for c in body.split(":", 1)[1].split(",")]
-                for token in body.split():
-                    if "=" in token:
-                        k, v = token.split("=", 1)
-                        meta.setdefault(k, v)
-            elif DATA_ROW.match(line):
-                rows.append(line.split(","))
-            else:
-                noise += 1
-
-    if columns is None:
-        raise ValueError(f"{path} has no '# columns:' header anywhere -- "
-                         "the boot banner was lost, so scale factors are unknown")
-    if not rows:
-        raise ValueError(f"{path} has no data rows")
-
-    rows = [r for r in rows if len(r) == len(columns)]
-    df = pd.DataFrame(np.array(rows, dtype=np.int64), columns=columns)
-
-    keep = df["t_us"].diff().fillna(1) > 0
-    meta["_noise_lines"] = noise
-    meta["_backwards_rows"] = int((~keep).sum())
-    df = df[keep].reset_index(drop=True)
-
-    mpu_lsb = float(meta.get("lsb_per_g", 4096.0))
-    for c in df.columns:
-        if c.startswith("mpu_"):
-            df[c] = df[c] / mpu_lsb
-        elif c.startswith("adxl_"):
-            df[c] = df[c] / 20.5
-
-    df["t_s"] = (df["t_us"] - df["t_us"].iloc[0]) / 1e6
-    return df, meta
-
-
 # -------------------------------------------------------------------- entry
 
 def main():
@@ -398,6 +348,8 @@ def main():
     ap.add_argument("--trial", type=int, default=1, help="repeat number at this fill")
     ap.add_argument("--mount", default="", help="how the boards are attached")
     ap.add_argument("--note", action="append", default=[], help="free text, repeatable")
+    ap.add_argument("--out-dir", default=".",
+                    help="folder for the run files, one per physical setup (created if missing)")
     args = ap.parse_args()
 
     if args.list:
@@ -432,8 +384,11 @@ def main():
     else:
         fill = "fillxxx"
 
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
     def name(label):
-        return f"run_{fill}_trial{args.trial}_{label}_{stamp}.csv"
+        return str(out_dir / f"run_{fill}_trial{args.trial}_{label}_{stamp}.csv")
 
     specs = [(port, name(args.label), args.label)]
     if args.port2:

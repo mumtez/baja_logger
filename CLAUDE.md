@@ -20,9 +20,13 @@ accelerometer, with no sensor on the tank itself.
 ## Project folder
 
 `~/Documents/baja_frequency/baja_logger` on Andrew's Mac. Python work happens in
-a venv there (`python3 -m venv venv && source venv/bin/activate`); the only
-dependency for capture is `pyserial`. Analysis needs numpy / scipy / pandas /
-matplotlib.
+a venv there (`python3 -m venv venv && source venv/bin/activate`,
+`pip install -r requirements.txt`); the only dependency for capture is
+`pyserial`. The venv is registered as the Jupyter kernel **"baja_logger (venv)"**.
+Run a notebook headless with
+`jupyter nbconvert --to notebook --execute --inplace --ExecutePreprocessor.kernel_name=baja-logger <nb>`.
+Notebooks are committed **with outputs**: the CSVs are gitignored, so saved
+plots are the only results a GitHub visitor sees.
 
 ---
 
@@ -80,9 +84,13 @@ matplotlib.
 | File | What it is |
 |---|---|
 | `baja_logger.ino` | Firmware. One sketch for both boards — pins are chosen by `#if defined(CONFIG_IDF_TARGET_ESP32C3)`, so just pick the right board in Tools. Streams CSV over serial. Commands: `g` start, `s` stop, `r` toggle, any other line is recorded as a note. Prints a stats line every 5 s. |
-| `capture.py` | Laptop-side capture. `--port`/`--port2` record both boards at once into two files. `--monitor` dumps raw board output for debugging. `--oz` / `--cups` log the fill level. Also exports `load_run()`. |
+| `capture.py` | Laptop-side capture. `--port`/`--port2` record both boards at once into two files. `--monitor` dumps raw board output for debugging. `--oz` / `--cups` log the fill level. `--out-dir` picks the setup folder. |
 | `i2c_scan/i2c_scan.ino` | Diagnostic. Scans the configured pins, then sweeps other plausible pairs looking for the four addresses an MPU6050 or ADXL375 can have. Board-aware pin lists. |
-| `tap_analysis.ipynb` | Analysis, sections 1–9. Edit it directly. |
+| `tapkit.py` | Shared analysis code: `load_run`, `load_setup`, tap finding, spectra, the survey features, and the scoring from ADR 0001. Both notebooks import it; don't copy functions into notebooks. |
+| `01_setup_check.ipynb` | Run first on every setup folder: load, taps, spectra, table peak, mass check (section 5), ratio dip, mount check (section 7), data quality. |
+| `02_predictor.ipynb` | Feature survey, predictor comparison (leave-one-level-out + up→down), `predict_water`. |
+| `data/<date>_<setup>/` | One folder per physical setup: `run_*.csv` (gitignored) plus a committed `setup.md` describing the arrangement. |
+| `CONTEXT.md`, `docs/adr/` | Glossary (table peak, ratio dip, mass mode, sweeps, the two tests) and decisions. |
 
 ---
 
@@ -136,8 +144,8 @@ Tank + fuel on rubber mounts is a mass on a spring:
 which rearranges to **1/f² = (4π²/k)(m_tank + m_fuel)** — a straight line in
 fuel mass whose intercept-over-slope is the tank's own mass. That ratio isn't
 fitted to anything measured, so comparing it to the tank on a scale is a real
-test of whether an observed shift is a mass effect at all. The notebook does
-this in section 5.
+test of whether an observed shift is a mass effect at all.
+`01_setup_check` does this in section 5.
 
 From the frame side you see the tank's resonance as an **anti-resonance (a
 dip)**, not a peak: at its own frequency the tank's apparent mass goes huge and
@@ -199,22 +207,36 @@ denting a 72% one.
 
 ---
 
-## The predictor (notebook section 9)
+## The predictor (`02_predictor.ipynb`)
 
-A working baseline, not the final gauge. Linear fit of water on two features
-from one board's tap-averaged spectrum:
+Scored per ADR 0001: one capture = one data point, **leave-one-level-out**
+plus the **up→down test** (fit on up-sweep, predict down-sweep), feature
+selection nested inside the folds. Winner = lowest *worse* of the two scores,
+because in the car fuel only goes down. 20 Sept results (fl oz RMS):
 
-- `peak_Hz` — log-interpolated peak in 45–75 Hz. Moves most when nearly full.
-- `low/high` — RMS 5–50 Hz over RMS 50–150 Hz. Moves most in the first pours.
+| Candidate | LOLO | up→down |
+|---|---|---|
+| baseline: table peak + low/high | 27 | 47 (worst 90) |
+| **physics pick: dip_Hz + low/high_notch** (winner) | 37 | 39 (worst 60) |
+| auto search, ≤3 features, nested | 53 | 47 |
+| PLS on whole log A/B ratio (benchmark only) | 49 | 43 |
 
-Each is flat where the other changes. Scored by **leave-one-level-out** CV
-(every level predicted by a fit that never saw it): **±27 oz RMS, worst miss
-50 oz**, over 14 runs at 8 levels. Guessing the mean would be ±113 oz. It
-recalibrates itself from whatever runs are in `DATA_DIR`, warns on
-extrapolation, and leaves a file out of its own fit before predicting it.
+Guessing the mean: ±113 oz. Findings:
 
-The 45–75 Hz band was chosen for this setup. Check section 3's plot before
-trusting it on a new arrangement.
+- The baseline's ±27 is mostly the rubber's history; the table peak reads
+  high on the way down.
+- low/high (board A, 29 Hz notched) is the steadiest single signal: ~±34 / ±32,
+  but that number was found after looking, so it's optimistic. Declare it as a
+  candidate *before* scoring the next setup.
+- Board B's low/high also tracks fill (ρ −0.97): the far board is not a
+  control. Board B has no peak in 45–75 Hz.
+- Tap noise is negligible (noise/trend < 0.1 on every feature). Misses come
+  from run-to-run drift, so more runs help and more taps don't.
+- Auto search picks a different subset in almost every fold: 14 captures is
+  too few for it.
+
+Bands (45–75 Hz table peak, 65–100 Hz dip) were chosen for this setup. Check
+`01_setup_check` section 3's plot before trusting them on a new arrangement.
 
 ---
 
@@ -246,7 +268,7 @@ trusting it on a new arrangement.
    in for a real tank, and repeat.
 3. **Mount check:** one run with the board clamped or glued instead of taped.
    Where the two spectra diverge is the honest upper frequency limit of taped
-   data (section 7).
+   data (`01_setup_check` section 7).
 4. On the car: chassis-side A/B transfer function, with the engine's RPM sweep
    as a free broadband exciter.
 

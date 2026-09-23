@@ -1,0 +1,9 @@
+# Capture only needs pyserial. Everything else is for the analysis notebooks.
+pyserial==3.5
+numpy==2.5.3
+scipy==1.18.1
+pandas==3.0.6
+matplotlib==3.11.2
+scikit-learn==1.9.1
+ipykernel==7.3.0
+nbconvert==7.17.1

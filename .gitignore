@@ -8,7 +8,7 @@ __pycache__/
 .DS_Store
 
 # Captured run data (large; keep locally or back up separately)
-run_*.csv
+data/**/*.csv
 
 # Arduino build output
 build/
